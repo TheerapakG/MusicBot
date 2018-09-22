@@ -5,30 +5,30 @@ WORKDIR /usr/src/musicbot
 COPY . ./
 
 # Install dependencies
-RUN apk update \
-&& apk add --no-cache \
+RUN apk update
+RUN apk add --no-cache \
   ca-certificates \
   ffmpeg \
   opus \
   python3 \
-  libsodium-dev \
-\
+  libsodium-dev
+
 # Install build dependencies
-&& apk add --no-cache --virtual .build-deps \
+RUN apk add --no-cache --virtual .build-deps \
   gcc \
   git \
   libffi-dev \
   make \
   musl-dev \
-  python3-dev \
-\
+  python3-dev
+
 # Install pip dependencies
-&& false \
-&& pip3 install --no-cache-dir -r requirements.txt \
-&& pip3 install --upgrade --force-reinstall --version websockets==4.0.1 \
-\
+RUN false
+RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --upgrade --force-reinstall --version websockets==4.0.1
+
 # Clean up build dependencies
-&& apk del .build-deps
+RUN apk del .build-deps
 
 # Create volume for mapping the config
 VOLUME /usr/src/musicbot/config
