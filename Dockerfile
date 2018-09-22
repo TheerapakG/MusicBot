@@ -23,7 +23,6 @@ RUN apk add --no-cache --virtual .build-deps \
   python3-dev
 
 # Install pip dependencies
-RUN false
 RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 install --upgrade --force-reinstall --version websockets==4.0.1
 
