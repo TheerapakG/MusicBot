@@ -23,6 +23,7 @@ RUN apk update \
   python3-dev \
 \
 # Install pip dependencies
+&& false
 && pip3 install --no-cache-dir -r requirements.txt \
 && pip3 install --upgrade --force-reinstall --version websockets==4.0.1 \
 \
