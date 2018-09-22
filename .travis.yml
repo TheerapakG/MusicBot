@@ -19,7 +19,7 @@ install:
 - pip install -U -r requirements.txt
 
 script:
-- if [ "$TYPE" = "docker" ]; then docker version; docker build -t musicbot .; docker images -a; fi;
+- if [ "$TYPE" = "docker" ]; then docker build -t musicbot .; docker images -a; fi;
 - if [ "$TYPE" = "build" ]; then python -m compileall ./musicbot; fi;
 
 after_success:
