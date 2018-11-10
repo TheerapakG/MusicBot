@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import shlex
 import shutil
@@ -22,6 +23,8 @@ from textwrap import dedent
 from datetime import timedelta
 from collections import defaultdict
 
+from urllib.error import URLError
+
 from discord.enums import ChannelType
 
 from . import exceptions
@@ -39,6 +42,7 @@ from .utils import load_file, write_file, fixg, ftimedelta, _func_, _get_variabl
 from .spotify import Spotify
 from .json import Json
 from .wrappers import ensure_appinfo
+from .lib.emitter_toggler import EmitterToggler
 
 from .constants import VERSION as BOTVERSION
 from .constants import DISCORD_MSG_CHAR_LIMIT, AUDIO_CACHE_PATH
@@ -80,6 +84,7 @@ class MusicBot(discord.Client):
 
         self.blacklist = set(load_file(self.config.blacklist_file))
         self.autoplaylist = load_file(self.config.auto_playlist_file)
+        self.autostream = load_file(self.config.auto_stream_file)
 
         self.aiolocks = defaultdict(asyncio.Lock)
         self.downloader = downloader.Downloader(download_folder='audio_cache')
@@ -88,11 +93,21 @@ class MusicBot(discord.Client):
 
         log.info('Starting MusicBot {}'.format(BOTVERSION))
 
+        self.playlisttype = list()
+
         if not self.autoplaylist:
             log.warning("Autoplaylist is empty, disabling.")
             self.config.auto_playlist = False
         else:
             log.info("Loaded autoplaylist with {} entries".format(len(self.autoplaylist)))
+            self.playlisttype.append('playlist')
+
+        if not self.autostream:
+            log.warning("Autostream is empty, disabling.")
+            self.config.auto_stream = False
+        else:
+            log.info("Loaded autostream with {} entries".format(len(self.autostream)))
+            self.playlisttype.append('stream')
 
         if self.blacklist:
             log.debug("Loaded blacklist with {} entries".format(len(self.blacklist)))
@@ -265,13 +280,14 @@ class MusicBot(discord.Client):
                     if player.is_stopped:
                         player.play()
 
-                    if self.config.auto_playlist:
+                    if self.config.auto_playlist or self.config.auto_stream:
                         if self.config.auto_pause:
                             player.once('play', lambda player, **_: _autopause(player))
                         if not player.playlist.entries:
                             await self.on_player_finished_playing(player)
 
-                except Exception:
+                except Exception as e:
+                    log.debug(str(e))
                     log.debug("Error joining {0.guild.name}/{0.name}".format(channel), exc_info=True)
                     log.error("Failed to join {0.guild.name}/{0.name}".format(channel))
 
@@ -335,6 +351,30 @@ class MusicBot(discord.Client):
                 log.info("Updating autoplaylist")
                 write_file(self.config.auto_playlist_file, self.autoplaylist)
 
+    async def remove_from_autostream(self, song_url:str, *, ex:Exception=None, delete_from_as=False):
+        if song_url not in self.autostream:
+            log.debug("URL \"{}\" not in autostream, ignoring".format(song_url))
+            return
+
+        async with self.aiolocks[_func_()]:
+            self.autostream.remove(song_url)
+            log.info("Removing unplayable song from session autostream: %s" % song_url)
+
+            with open(self.config.auto_stream_removed_file, 'a', encoding='utf8') as f:
+                f.write(
+                    '# Entry removed {ctime}\n'
+                    '# Reason: {ex}\n'
+                    '{url}\n\n{sep}\n\n'.format(
+                        ctime=time.ctime(),
+                        ex=str(ex).replace('\n', '\n#' + ' ' * 10), # 10 spaces to line up with # Reason:
+                        url=song_url,
+                        sep='#' * 32
+                ))
+
+            if delete_from_as:
+                log.info("Updating autostream")
+                write_file(self.config.auto_stream_file, self.autostream)
+
     @ensure_appinfo
     async def generate_invite_link(self, *, permissions=discord.Permissions(70380544), guild=None):
         return discord.utils.oauth_url(self.cached_app_info.id, permissions=permissions, guild=guild)
@@ -389,6 +429,7 @@ class MusicBot(discord.Client):
 
                 if player:
                     log.debug("Created player via deserialization for guild %s with %s entries", guild.id, len(player.playlist))
+                    player.auto_mode = await self.deserialize_json(guild, dir = 'data/%s/mode.json')                    
                     # Since deserializing only happens when the bot starts, I should never need to reconnect
                     return self._init_player(player, guild=guild)
 
@@ -414,6 +455,12 @@ class MusicBot(discord.Client):
                        .on('finished-playing', self.on_player_finished_playing) \
                        .on('entry-added', self.on_player_entry_added) \
                        .on('error', self.on_player_error)
+
+        player.auto_state = EmitterToggler(player)
+        player.auto_state.add({
+            'autoentry': True,
+            'finishedentry': False,
+            })
 
         player.skip_state = SkipState()
 
@@ -488,70 +535,186 @@ class MusicBot(discord.Client):
                 player.pause()
                 self.server_specific_data[player.voice_client.channel.guild]['auto_paused'] = True
 
-        if not player.playlist.entries and not player.current_entry and self.config.auto_playlist:
+        if not player.auto_mode:
+            player.auto_mode = dict()
+            player.auto_mode['mode'] = self.config.auto_mode
+            if(player.auto_mode['mode'] == 'toggle'):
+                player.auto_mode['auto_toggle'] = self.playlisttype[0]
+            await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+        
+        if not player.playlist.entries and not player.current_entry and (self.config.auto_playlist or self.config.auto_stream):
             if not player.autoplaylist:
-                if not self.autoplaylist:
-                    # TODO: When I add playlist expansion, make sure that's not happening during this check
-                    log.warning("No playable songs in the autoplaylist, disabling.")
-                    self.config.auto_playlist = False
-                else:
-                    log.debug("No content in current autoplaylist. Filling with new music...")
-                    player.autoplaylist = list(self.autoplaylist)
+                player.autoplaylist = list()
+                if self.config.auto_playlist:
+                    if not self.autoplaylist:
+                        # TODO: When I add playlist expansion, make sure that's not happening during this check
+                        log.warning("No playable songs in the autoplaylist, disabling.")
+                        if(player.auto_mode['mode'] == 'toggle'):
+                            if player.auto_mode['auto_toggle'] == 'playlist' and len(self.playlisttype) > 1:
+                                try:
+                                    i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                    if i == len(self.playlisttype):
+                                        i = 0
+                                except ValueError:
+                                    i = 0
+                            player.auto_mode['auto_toggle'] = self.playlisttype[i]
+                        self.playlisttype.remove('playlist')
+                        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+                        self.config.auto_playlist = False
+                    else:
+                        if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'playlist'):
+                            log.debug("No content in current autoplaylist. Filling with new music...")
+                            player.autoplaylist.extend([(url, "default") for url in list(self.autoplaylist)])
+                if self.config.auto_stream:
+                    if not self.autostream:
+                        log.warning("No playable songs in the autostream, disabling.")
+                        if(player.auto_mode['mode'] == 'toggle'):
+                            if player.auto_mode['auto_toggle'] == 'stream' and len(self.playlisttype) > 1:
+                                try:
+                                    i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                    if i == len(self.playlisttype):
+                                        i = 0
+                                except ValueError:
+                                    i = 0
+                            player.auto_mode['auto_toggle'] = self.playlisttype[i]
+                        self.playlisttype.remove('stream')
+                        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+                        self.config.auto_stream = False
+                    else:
+                        if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'stream'):
+                            log.debug("No content in current autostream. Filling with new music...")
+                            player.autoplaylist.extend([(url, "stream") for url in list(self.autostream)])
 
             while player.autoplaylist:
-                if self.config.auto_playlist_random:
+                if self.config.auto_playlist_stream_random:
                     random.shuffle(player.autoplaylist)
                     song_url = random.choice(player.autoplaylist)
                 else:
                     song_url = player.autoplaylist[0]
                 player.autoplaylist.remove(song_url)
 
-                info = {}
+                if song_url[1] == "default":
 
-                try:
-                    info = await self.downloader.extract_info(player.playlist.loop, song_url, download=False, process=False)
-                except downloader.youtube_dl.utils.DownloadError as e:
-                    if 'YouTube said:' in e.args[0]:
-                        # url is bork, remove from list and put in removed list
-                        log.error("Error processing youtube url:\n{}".format(e.args[0]))
+                    info = {}
 
-                    else:
-                        # Probably an error from a different extractor, but I've only seen youtube's
-                        log.error("Error processing \"{url}\": {ex}".format(url=song_url, ex=e))
+                    try:
+                        info = await self.downloader.extract_info(player.playlist.loop, song_url[0], download=False, process=False)
+                    except downloader.youtube_dl.utils.DownloadError as e:
+                        if 'YouTube said:' in e.args[0]:
+                            # url is bork, remove from list and put in removed list
+                            log.error("Error processing youtube url:\n{}".format(e.args[0]))
 
-                    await self.remove_from_autoplaylist(song_url, ex=e, delete_from_ap=self.config.remove_ap)
-                    continue
+                        else:
+                            # Probably an error from a different extractor, but I've only seen youtube's
+                            log.error("Error processing \"{url}\": {ex}".format(url=song_url[0], ex=e))
 
-                except Exception as e:
-                    log.error("Error processing \"{url}\": {ex}".format(url=song_url, ex=e))
-                    log.exception()
+                        await self.remove_from_autoplaylist(song_url[0], ex=e, delete_from_ap=self.config.remove_ap)
+                        continue
 
-                    self.autoplaylist.remove(song_url)
-                    continue
+                    except Exception as e:
+                        log.error("Error processing \"{url}\": {ex}".format(url=song_url[0], ex=e))
+                        log.exception()
 
-                if info.get('entries', None):  # or .get('_type', '') == 'playlist'
-                    log.debug("Playlist found but is unsupported at this time, skipping.")
-                    # TODO: Playlist expansion
+                        self.autoplaylist.remove(song_url[0])
+                        continue
 
-                # Do I check the initial conditions again?
-                # not (not player.playlist.entries and not player.current_entry and self.config.auto_playlist)
+                    if info.get('entries', None):  # or .get('_type', '') == 'playlist'
+                        log.debug("Playlist found but is unsupported at this time, skipping.")
+                        # TODO: Playlist expansion
 
-                if self.config.auto_pause:
-                    player.once('play', lambda player, **_: _autopause(player))
+                    # Do I check the initial conditions again?
+                    # not (not player.playlist.entries and not player.current_entry and self.config.auto_playlist)
 
-                try:
-                    await player.playlist.add_entry(song_url, channel=None, author=None)
-                except exceptions.ExtractionError as e:
-                    log.error("Error adding song from autoplaylist: {}".format(e))
-                    log.debug('', exc_info=True)
-                    continue
+                    if self.config.auto_pause:
+                        player.once('play', lambda player, **_: _autopause(player))
 
-                break
+                    try:
+                        player.auto_state.once('change-entry', 'finishedentry')
+                        player.auto_state.once('play', 'autoentry')
+                        await player.playlist.add_entry(song_url[0], channel=None, author=None)
+                    except exceptions.ExtractionError as e:
+                        log.error("Error adding song from autoplaylist: {}".format(e))
+                        log.debug('', exc_info=True)
+                        continue
 
-            if not self.autoplaylist:
-                # TODO: When I add playlist expansion, make sure that's not happening during this check
-                log.warning("No playable songs in the autoplaylist, disabling.")
-                self.config.auto_playlist = False
+                    break
+                    
+                elif song_url[1] == "stream":
+                        
+                    info = {'extractor': None}
+
+                    try:
+                        info = await self.downloader.extract_info(player.playlist.loop, song_url[0], download=False, process=False)
+                    except downloader.youtube_dl.utils.DownloadError as e:
+                        
+                        if e.exc_info[0] == URLError:
+                            if os.path.exists(os.path.abspath(song_url[0])):
+                                await self.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("This is not a stream, this is a file path."), delete_from_as=self.config.remove_as)
+                                continue
+                         
+                            else:  # it might be a file path that just doesn't exist
+                                await self.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("Invalid input: {0.exc_info[0]}: {0.exc_info[1].reason}".format(e)), delete_from_as=self.config.remove_as)
+                                continue
+
+                        else:
+                            # traceback.print_exc()
+                            await self.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("Unknown error: {}".format(e)), delete_from_as=self.config.remove_as)
+                            continue
+                        
+                    except Exception as e:
+                        log.error('Could not extract information from {} ({}), falling back to direct'.format(song_url[0], e), exc_info=True)
+
+                    if info.get('is_live') is None and info.get('extractor', None) is not 'generic':  # wew hacky
+                        await self.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("This is not a stream."), delete_from_as=self.config.remove_as)
+                        continue
+
+                    if self.config.auto_pause:
+                        player.once('play', lambda player, **_: _autopause(player))
+
+                    try:
+                        player.auto_state.once('change-entry', 'finishedentry')
+                        player.auto_state.once('play', 'autoentry')
+                        await player.playlist.add_stream_entry(song_url[0], info=None)
+                    except exceptions.ExtractionError as e:
+                        log.error("Error adding song from autostream: {}".format(e))
+                        log.debug('', exc_info=True)
+                        continue
+
+                    break
+                    
+                else:
+                    log.error("autoplaylist type undefined: {}".format(song_url[1]))
+                        
+                if self.config.auto_playlist:
+                    if not self.autoplaylist:
+                        # TODO: When I add playlist expansion, make sure that's not happening during this check
+                        log.warning("No playable songs in the autoplaylist, disabling.")
+                        self.config.auto_playlist = False
+                        if player.auto_mode['auto_toggle'] == 'playlist' and len(self.playlisttype) > 1:
+                            try:
+                                i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                if i == len(self.playlisttype):
+                                    i = 0
+                            except ValueError:
+                                i = 0
+                            player.auto_mode['auto_toggle'] = self.playlisttype[i]
+                        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+                        self.playlisttype.remove('playlist')
+
+                if self.config.auto_stream:
+                    if not self.autostream:
+                        log.warning("No playable songs in the autostream, disabling.")
+                        self.config.auto_stream = False
+                        if player.auto_mode['auto_toggle'] == 'stream' and len(self.playlisttype) > 1:
+                            try:
+                                i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                if i == len(self.playlisttype):
+                                    i = 0
+                            except ValueError:
+                                i = 0
+                            player.auto_mode['auto_toggle'] = self.playlisttype[i]
+                        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+                        self.playlisttype.remove('stream')
 
         else: # Don't serialize for autoplaylist events
             await self.serialize_queue(player.voice_client.channel.guild)
@@ -673,6 +836,41 @@ class MusicBot(discord.Client):
 
         return MusicPlayer.from_json(data, self, voice_client, playlist)
 
+    async def serialize_json(self, data, guild, *, dir=None):
+        """
+        Serialize the current queue for a server's player to json.
+        """
+
+        dir = dir.replace('%s', str(guild.id))
+
+        async with self.aiolocks['json_serialization' + ':' + str(guild.id)]:
+            log.debug("Serializing json for %s at %s", guild.id, dir)
+
+            with open(dir, 'w', encoding='utf8') as f:
+                f.write(json.dumps(data))
+
+    async def deserialize_json(self, guild, *, dir=None):
+        """
+        Deserialize arbitrary json.
+        """
+
+        dir = dir.replace('%s', str(guild.id))
+
+        async with self.aiolocks['json_serialization' + ':' + str(guild.id)]:
+            if not os.path.isfile(dir):
+                return None
+
+            log.debug("Deserializing json for %s at %s", guild.id, dir)
+
+            try:
+                with open(dir, 'r', encoding='utf8') as f:
+                    data = f.read()
+
+            except FileNotFoundError:
+                return None
+
+        return json.loads(data)
+
     async def write_current_song(self, guild, entry, *, dir=None):
         """
         Writes the current song to file
@@ -701,6 +899,9 @@ class MusicBot(discord.Client):
         # playlists in autoplaylist
         await self._scheck_autoplaylist()
 
+        # playlists in autostream
+        await self._scheck_autostream()
+
         # config/permissions async validate?
         await self._scheck_configs()
 
@@ -727,6 +928,10 @@ class MusicBot(discord.Client):
 
     async def _scheck_autoplaylist(self):
         log.debug("Auditing autoplaylist")
+        pass # TODO
+
+    async def _scheck_autostream(self):
+        log.debug("Auditing autostream")
         pass # TODO
 
     async def _scheck_configs(self):
@@ -1011,7 +1216,8 @@ class MusicBot(discord.Client):
                 self.config.skips_required, fixg(self.config.skip_ratio_required * 100)))
             log.info("  Now Playing @mentions: " + ['Disabled', 'Enabled'][self.config.now_playing_mentions])
             log.info("  Auto-Summon: " + ['Disabled', 'Enabled'][self.config.auto_summon])
-            log.info("  Auto-Playlist: " + ['Disabled', 'Enabled'][self.config.auto_playlist] + " (order: " + ['sequential', 'random'][self.config.auto_playlist_random] + ")")
+            log.info("  Auto-Playlist: " + ['Disabled', 'Enabled'][self.config.auto_playlist] + " (order: " + ['sequential', 'random'][self.config.auto_playlist_stream_random] + ")")
+            log.info("  Auto-Stream: " + ['Disabled', 'Enabled'][self.config.auto_stream] + " (order: " + ['sequential', 'random'][self.config.auto_playlist_stream_random] + ")")
             log.info("  Auto-Pause: " + ['Disabled', 'Enabled'][self.config.auto_pause])
             log.info("  Delete Messages: " + ['Disabled', 'Enabled'][self.config.delete_messages])
             if self.config.delete_messages:
