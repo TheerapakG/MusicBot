@@ -10,8 +10,7 @@ log = logging.getLogger(__name__)
 
 cog_name = 'autoplaylist'
 
-# @TheerapakG: TODO: bot > self
-async def cmd_resetplaylist(self, player, channel):
+async def cmd_resetplaylist(bot, player, channel):
     """
     Usage:
         {command_prefix}resetplaylist
@@ -20,53 +19,52 @@ async def cmd_resetplaylist(self, player, channel):
     """
     if not player.autoplaylist_mode:
         player.auto_mode = dict()
-        player.auto_mode['mode'] = self.config.auto_playlist
+        player.auto_mode['mode'] = bot.config.auto_playlist
         if(player.auto_mode['mode'] == 'toggle'):
-            player.auto_mode['auto_toggle'] = self.playlisttype[0]
-        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+            player.auto_mode['auto_toggle'] = bot.playlisttype[0]
+        await bot.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
 
     player.autoplaylist = list()
-    if self.config.auto_playlist:
-        if not self.autoplaylist:
+    if bot.config.auto_playlist:
+        if not bot.autoplaylist:
             # TODO: When I add playlist expansion, make sure that's not happening during this check
             log.warning("No playable songs in the autoplaylist, disabling.")
-            self.config.auto_playlist = False
-            if player.auto_mode['auto_toggle'] == 'playlist' and len(self.playlisttype) > 1:
+            bot.config.auto_playlist = False
+            if player.auto_mode['auto_toggle'] == 'playlist' and len(bot.playlisttype) > 1:
                 try:
-                    i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
-                    if i == len(self.playlisttype):
+                    i = bot.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                    if i == len(bot.playlisttype):
                         i = 0
                 except ValueError:
                     i = 0
-                player.auto_mode['auto_toggle'] = self.playlisttype[i]
-            await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
-            self.playlisttype.remove('playlist')
+                player.auto_mode['auto_toggle'] = bot.playlisttype[i]
+            await bot.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+            bot.playlisttype.remove('playlist')
         else:
             if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'playlist'):
                 log.debug("resetting current autoplaylist...")
-                player.autoplaylist.extend([(url, "default") for url in list(self.autoplaylist)])
-    if self.config.auto_stream:
-        if not self.autostream:
+                player.autoplaylist.extend([(url, "default") for url in list(bot.autoplaylist)])
+    if bot.config.auto_stream:
+        if not bot.autostream:
             log.warning("No playable songs in the autostream, disabling.")
-            self.config.auto_stream = False
-            if player.auto_mode['auto_toggle'] == 'stream' and len(self.playlisttype) > 1:
+            bot.config.auto_stream = False
+            if player.auto_mode['auto_toggle'] == 'stream' and len(bot.playlisttype) > 1:
                 try:
-                    i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
-                    if i == len(self.playlisttype):
+                    i = bot.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                    if i == len(bot.playlisttype):
                         i = 0
                 except ValueError:
                     i = 0
-                player.auto_mode['auto_toggle'] = self.playlisttype[i]
-            await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
-            self.playlisttype.remove('stream')
+                player.auto_mode['auto_toggle'] = bot.playlisttype[i]
+            await bot.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+            bot.playlisttype.remove('stream')
         else:
             if  player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'stream'):
                 log.debug("resetting current autostream...")
-                player.autoplaylist.extend([(url, "stream") for url in list(self.autostream)])
-    return Response(self.str.get('cmd-resetplaylist-response', '\N{OK HAND SIGN}'), delete_after=15)
+                player.autoplaylist.extend([(url, "stream") for url in list(bot.autostream)])
+    return Response(bot.str.get('cmd-resetplaylist-response', '\N{OK HAND SIGN}'), delete_after=15)
 
-# @TheerapakG: TODO: bot > self
-async def cmd_toggleplaylist(self, author, permissions, player, channel):
+async def cmd_toggleplaylist(bot, author, permissions, player, channel):
     """
     Usage:
         {command_prefix}toggleplaylist
@@ -75,31 +73,31 @@ async def cmd_toggleplaylist(self, author, permissions, player, channel):
     """
     if not player.auto_mode:
         player.auto_mode = dict()
-        player.auto_mode['mode'] = self.config.auto_mode
+        player.auto_mode['mode'] = bot.config.auto_mode
         if(player.auto_mode['mode'] == 'toggle'):
-            player.auto_mode['auto_toggle'] = self.playlisttype[0]
-        await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+            player.auto_mode['auto_toggle'] = bot.playlisttype[0]
+        await bot.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
 
     if player.auto_mode['mode'] == 'toggle':
         if not permissions.toggle_playlists:
             raise exceptions.PermissionsError(
-                self.str.get('cmd-toggleplaylist-noperm', 'You have no permission to toggle autoplaylist'),
+                bot.str.get('cmd-toggleplaylist-noperm', 'You have no permission to toggle autoplaylist'),
                 expire_in=30
             )
 
-        if len(self.playlisttype) == 0:
-            return Response(self.str.get('cmd-toggleplaylist-nolist', 'There is not any autoplaylist to toggle to'), delete_after=15)
+        if len(bot.playlisttype) == 0:
+            return Response(bot.str.get('cmd-toggleplaylist-nolist', 'There is not any autoplaylist to toggle to'), delete_after=15)
         try:
-            i = self.playlisttype.index(player.auto_mode['auto_toggle']) + 1
-            if i == len(self.playlisttype):
+            i = bot.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+            if i == len(bot.playlisttype):
                 i = 0
         except ValueError:
             i = 0
-        if self.playlisttype[i] == player.auto_mode['auto_toggle']:
-            return Response(self.str.get('cmd-toggleplaylist-nolist', 'There is not any autoplaylist to toggle to'), delete_after=15)
+        if bot.playlisttype[i] == player.auto_mode['auto_toggle']:
+            return Response(bot.str.get('cmd-toggleplaylist-nolist', 'There is not any autoplaylist to toggle to'), delete_after=15)
         else:
-            player.auto_mode['auto_toggle'] = self.playlisttype[i]
-            await self.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
+            player.auto_mode['auto_toggle'] = bot.playlisttype[i]
+            await bot.serialize_json(player.auto_mode, player.voice_client.channel.guild, dir = 'data/%s/mode.json')
             # reset playlist
             player.autoplaylist = list()
             # if autoing then switch
@@ -107,12 +105,11 @@ async def cmd_toggleplaylist(self, author, permissions, player, channel):
                 player.skip()
             # on_player_finished_playing should fill in the music
             # done!
-            return Response(self.str.get('cmd-toggleplaylist-success', 'Switched autoplaylist to {0}').format(player.auto_mode['auto_toggle']), delete_after=15)
+            return Response(bot.str.get('cmd-toggleplaylist-success', 'Switched autoplaylist to {0}').format(player.auto_mode['auto_toggle']), delete_after=15)
     else:
-        return Response(self.str.get('cmd-toggleplaylist-wrongmode', 'Mode for dealing with autoplaylists is not set to \'toggle\', currently set to {0}').format(self.config.auto_mode), delete_after=15)
+        return Response(bot.str.get('cmd-toggleplaylist-wrongmode', 'Mode for dealing with autoplaylists is not set to \'toggle\', currently set to {0}').format(bot.config.auto_mode), delete_after=15)
 
-# @TheerapakG: TODO: bot > self
-async def cmd_save(self, player, url=None):
+async def cmd_save(bot, player, url=None):
     """
     Usage:
         {command_prefix}save [url]
@@ -123,20 +120,19 @@ async def cmd_save(self, player, url=None):
         if not url:
             url = player.current_entry.url
 
-        if url not in self.autoplaylist:
-            self.autoplaylist.append(url)
-            write_file(self.config.auto_playlist_file, self.autoplaylist)
+        if url not in bot.autoplaylist:
+            bot.autoplaylist.append(url)
+            write_file(bot.config.auto_playlist_file, bot.autoplaylist)
             log.debug("Appended {} to autoplaylist".format(url))
-            if 'playlist' not in self.playlisttype:
-                self.playlisttype.append('playlist')
-            return Response(self.str.get('cmd-save-success', 'Added <{0}> to the autoplaylist.').format(url))
+            if 'playlist' not in bot.playlisttype:
+                bot.playlisttype.append('playlist')
+            return Response(bot.str.get('cmd-save-success', 'Added <{0}> to the autoplaylist.').format(url))
         else:
-            raise exceptions.CommandError(self.str.get('cmd-save-exists', 'This song is already in the autoplaylist.'))
+            raise exceptions.CommandError(bot.str.get('cmd-save-exists', 'This song is already in the autoplaylist.'))
     else:
-        raise exceptions.CommandError(self.str.get('cmd-save-invalid', 'There is no valid song playing.'))
+        raise exceptions.CommandError(bot.str.get('cmd-save-invalid', 'There is no valid song playing.'))
 
-# @TheerapakG: TODO: bot > self
-async def cmd_autostream(self, player, option, url=None):
+async def cmd_autostream(bot, player, option, url=None):
     """
     Usage:
         {command_prefix}autostream [+, -, add, remove] [url]
@@ -148,33 +144,33 @@ async def cmd_autostream(self, player, option, url=None):
             url = player.current_entry.url
     else:
         if not url:
-            raise exceptions.CommandError(self.str.get('cmd-autostream-stream-invalid', 'There is no valid stream playing.'))
+            raise exceptions.CommandError(bot.str.get('cmd-autostream-stream-invalid', 'There is no valid stream playing.'))
 
     if not url:
-        raise exceptions.CommandError(self.str.get('cmd-autostream-nourl', '\'Emptiness\' is not a valid URL. Maybe you forget options?'))
+        raise exceptions.CommandError(bot.str.get('cmd-autostream-nourl', '\'Emptiness\' is not a valid URL. Maybe you forget options?'))
         
     
     if option in ['+', 'add']:
-        if url not in self.autostream:
-            self.autostream.append(url)
-            write_file(self.config.auto_stream_file, self.autostream)
-            if 'stream' not in self.playlisttype:
-                self.playlisttype.append('stream')
+        if url not in bot.autostream:
+            bot.autostream.append(url)
+            write_file(bot.config.auto_stream_file, bot.autostream)
+            if 'stream' not in bot.playlisttype:
+                bot.playlisttype.append('stream')
             log.debug("Appended {} to autostream".format(url))
-            return Response(self.str.get('cmd-addstream-success', 'Added <{0}> to the autostream.').format(url))
+            return Response(bot.str.get('cmd-addstream-success', 'Added <{0}> to the autostream.').format(url))
         else:
-            raise exceptions.CommandError(self.str.get('cmd-addstream-exists', 'This stream is already in the autostream.'))
+            raise exceptions.CommandError(bot.str.get('cmd-addstream-exists', 'This stream is already in the autostream.'))
 
     elif option in ['-', 'remove']:
-        if url not in self.autostream:
+        if url not in bot.autostream:
             log.debug("URL \"{}\" not in autostream, ignoring".format(url))
-            raise exceptions.CommandError(self.str.get('cmd-removestream-notexists', 'This stream is already not in the autostream.'))
+            raise exceptions.CommandError(bot.str.get('cmd-removestream-notexists', 'This stream is already not in the autostream.'))
 
-        async with self.aiolocks['remove_from_autostream']:
-            self.autostream.remove(url)
+        async with bot.aiolocks['remove_from_autostream']:
+            bot.autostream.remove(url)
             log.info("Removing song from session autostream: %s" % url)
 
-            with open(self.config.auto_stream_removed_file, 'a', encoding='utf8') as f:
+            with open(bot.config.auto_stream_removed_file, 'a', encoding='utf8') as f:
                 f.write(
                     '# Entry removed {ctime}\n'
                     '# Reason: {re}\n'
@@ -186,9 +182,9 @@ async def cmd_autostream(self, player, option, url=None):
                 ))
 
             log.info("Updating autostream")
-            write_file(self.config.auto_stream_file, self.autostream)
+            write_file(bot.config.auto_stream_file, bot.autostream)
 
-        return Response(self.str.get('cmd-removestream-success', 'Removed <{0}> from the autostream.').format(url))
+        return Response(bot.str.get('cmd-removestream-success', 'Removed <{0}> from the autostream.').format(url))
 
     else:
-        raise exceptions.CommandError(self.str.get('cmd-autostream-nooption', 'Check your specified option argument. It needs to be +, -, add or remove.'))
+        raise exceptions.CommandError(bot.str.get('cmd-autostream-nooption', 'Check your specified option argument. It needs to be +, -, add or remove.'))

@@ -147,9 +147,8 @@ async def cmd_setname(bot, leftover_args, name):
 
     return Response("Set the bot's username to **{0}**".format(name), delete_after=20)
 
-# @TheerapakG: TODO: bot > self
 @owner_only
-async def cmd_option(self, player, option, value):
+async def cmd_option(bot, player, option, value):
     """
     Usage:
         {command_prefix}option [option] [on/y/enabled/off/n/disabled]
@@ -174,54 +173,54 @@ async def cmd_option(self, player, option, value):
                 'write_current_song']  # these need to match attribute names in the Config class
     if option in ['autoplaylist', 'auto_playlist']:
         if value in bool_y:
-            if self.config.auto_playlist:
-                raise exceptions.CommandError(self.str.get('cmd-option-autoplaylist-enabled', 'The autoplaylist is already enabled!'))
+            if bot.config.auto_playlist:
+                raise exceptions.CommandError(bot.str.get('cmd-option-autoplaylist-enabled', 'The autoplaylist is already enabled!'))
             else:
-                if not self.autoplaylist:
-                    raise exceptions.CommandError(self.str.get('cmd-option-autoplaylist-none', 'There are no entries in the autoplaylist file.'))
-                self.config.auto_playlist = True
-                self.playlisttype.append('playlist')
-                await self.on_player_finished_playing(player)
+                if not bot.autoplaylist:
+                    raise exceptions.CommandError(bot.str.get('cmd-option-autoplaylist-none', 'There are no entries in the autoplaylist file.'))
+                bot.config.auto_playlist = True
+                bot.playlisttype.append('playlist')
+                await bot.on_player_finished_playing(player)
         elif value in bool_n:
-            if not self.config.auto_playlist:
-                raise exceptions.CommandError(self.str.get('cmd-option-autoplaylist-disabled', 'The autoplaylist is already disabled!'))
+            if not bot.config.auto_playlist:
+                raise exceptions.CommandError(bot.str.get('cmd-option-autoplaylist-disabled', 'The autoplaylist is already disabled!'))
             else:
-                self.config.auto_playlist = False
-                self.playlisttype.remove('playlist')
+                bot.config.auto_playlist = False
+                bot.playlisttype.remove('playlist')
         else:
-            raise exceptions.CommandError(self.str.get('cmd-option-invalid-value', 'The value provided was not valid.'))
-        return Response("The autoplaylist is now " + ['disabled', 'enabled'][self.config.auto_playlist] + '.')
+            raise exceptions.CommandError(bot.str.get('cmd-option-invalid-value', 'The value provided was not valid.'))
+        return Response("The autoplaylist is now " + ['disabled', 'enabled'][bot.config.auto_playlist] + '.')
     elif option in ['autostream', 'auto_stream']:
         if value in bool_y:
-            if self.config.auto_stream:
-                raise exceptions.CommandError(self.str.get('cmd-option-autostream-enabled', 'The autostream is already enabled!'))
+            if bot.config.auto_stream:
+                raise exceptions.CommandError(bot.str.get('cmd-option-autostream-enabled', 'The autostream is already enabled!'))
             else:
-                if not self.autostream:
-                    raise exceptions.CommandError(self.str.get('cmd-option-autostream-none', 'There are no entries in the autostream file.'))
-                self.config.auto_stream = True
-                self.playlisttype.append('stream')
-                await self.on_player_finished_playing(player)
+                if not bot.autostream:
+                    raise exceptions.CommandError(bot.str.get('cmd-option-autostream-none', 'There are no entries in the autostream file.'))
+                bot.config.auto_stream = True
+                bot.playlisttype.append('stream')
+                await bot.on_player_finished_playing(player)
         elif value in bool_n:
-            if not self.config.auto_stream:
-                raise exceptions.CommandError(self.str.get('cmd-option-autostream-disabled', 'The autostream is already disabled!'))
+            if not bot.config.auto_stream:
+                raise exceptions.CommandError(bot.str.get('cmd-option-autostream-disabled', 'The autostream is already disabled!'))
             else:
-                self.config.auto_stream = False
-                self.playlisttype.remove('stream')
+                bot.config.auto_stream = False
+                bot.playlisttype.remove('stream')
         else:
-            raise exceptions.CommandError(self.str.get('cmd-option-invalid-value', 'The value provided was not valid.'))
-        return Response("The autostream is now " + ['disabled', 'enabled'][self.config.auto_stream] + '.')
+            raise exceptions.CommandError(bot.str.get('cmd-option-invalid-value', 'The value provided was not valid.'))
+        return Response("The autostream is now " + ['disabled', 'enabled'][bot.config.auto_stream] + '.')
     else:
         is_generic = [o for o in generic if o == option]  # check if it is a generic bool option
         if is_generic and (value in bool_y or value in bool_n):
             name = is_generic[0]
             log.debug('Setting attribute {0}'.format(name))
-            setattr(self.config, name, True if value in bool_y else False)  # this is scary but should work
-            attr = getattr(self.config, name)
+            setattr(bot.config, name, True if value in bool_y else False)  # this is scary but should work
+            attr = getattr(bot.config, name)
             res = "The option {0} is now ".format(option) + ['disabled', 'enabled'][attr] + '.'
             log.warning('Option overriden for this session: {0}'.format(res))
             return Response(res)
         else:
-            raise exceptions.CommandError(self.str.get('cmd-option-invalid-param' ,'The parameters provided were invalid.'))
+            raise exceptions.CommandError(bot.str.get('cmd-option-invalid-param' ,'The parameters provided were invalid.'))
 
 async def cmd_summon(bot, channel, guild, author, voice_channel):
     """
