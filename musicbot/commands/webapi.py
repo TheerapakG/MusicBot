@@ -1,9 +1,17 @@
-# This cogs will implement webserver that can respond to bot query, maybe useful for interfacing with external application
-# If you don't need querying via webserver, you shouldn't load this cog
+"""
+This cog implement webserver that can respond to bot query which
+maybe useful for interfacing with external application.
+If you don't need querying via webserver, you shouldn't load this cog
 
-# If the API will be exposed to the internet, consider specifying certificate for security
+If the API will be exposed to the internet, consider specifying
+certificate for security against packet sniffing from third party
 
-# This cog requires Python 3.7
+DO NOT GIVE GENERATED TOKENS TO UNKNOWN RANDOM PEOPLE!! ANYONE WITH TOKEN
+CAN ISSUE REMOTE EXECUTION VIA post:eval and post:exec METHODS. FAILING TO DO
+THIS CAN RESULT IN COMPROMISE OF YOUR MACHINE'S SECURITY.
+
+This cog require Python 3.7+
+"""
 
 import socket
 import sys
@@ -11,9 +19,11 @@ import logging
 import asyncio
 import threading
 import json
-import uuid
 import traceback
-from urllib.parse import urlparse
+import os
+from collections import defaultdict
+from secrets import token_urlsafe
+from urllib.parse import urlparse, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import discord
@@ -27,45 +37,83 @@ from ..wrappers import dev_only
 log = logging.getLogger(__name__)
 
 cog_name = 'webapi'
+
+aiolocks = defaultdict(asyncio.Lock)
  
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 host = ''
 botinst = None
-authtoken = set()
+
+authtoken = list()
+
+async def serialize_tokens():
+    directory = 'data/tokens.json'
+    async with aiolocks['token_serialization']:
+        log.debug("Serializing tokens")
+
+        with open(directory, 'w', encoding='utf8') as f:
+            f.write(json.dumps(authtoken))
+
+async def deserialize_tokens() -> list:
+    directory = 'data/tokens.json'
+
+    async with aiolocks['token_serialization']:
+        if not os.path.isfile(directory):
+            return list()
+
+        log.debug("Deserializing tokens")
+
+        with open(directory, 'r', encoding='utf8') as f:
+            data = f.read()
+    
+    return json.loads(data)
+
+webserver = None
 
 class RequestHdlr(BaseHTTPRequestHandler):
     def gen_content_POST(self):
         path = self.path[4:]
         param = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        if path == '/exec':
-            if 'token' in param and param['token'] in authtoken:
+        if 'token' in param and param['token'] in authtoken:
+            if path == '/exec':
                 if 'code' in param:
                     try:
                         threadsafe_exec_bot(param['code'])
                         return {'action':True, 'error':False, 'result':''}
                     except:
                         return {'action':True, 'error':True, 'result':traceback.format_exc()}
-            return {'action':False}
-        if path == '/eval':
-            if 'token' in param and param['token'] in authtoken:
+                return {'action':False}
+            elif path == '/eval':
                 if 'code' in param:
                     try:
                         ret = threadsafe_eval_bot(param['code'])
                         return {'action':True, 'error':False, 'result':str(ret)}
                     except:
                         return {'action':True, 'error':True, 'result':traceback.format_exc()}
-            return {'action':False}
+                return {'action':False}
         return None
 
     def gen_content_GET(self):
         path = self.path[4:]
         parse = urlparse(path)
-        return str(parse)
+        param = {param_k:param_arglist[-1] for param_k, param_arglist in parse_qs(parse.query).items()}
+        if 'token' in param and param['token'] in authtoken and 'get' in param:
+            if param['get'] == 'cog':
+                return get_cog_list()
+            elif param['get'] == 'cmd' and 'cog' in param:
+                return get_cmd_list(param['cog'])
+            elif param['get'] == 'guild':
+                return get_guild_list()
+            elif param['get'] == 'member' and 'guild' in param:
+                return get_member_list(int(param['guild']))
+            elif param['get'] == 'player' and 'guild' in param:
+                return get_player(int(param['guild']))
+        return None
 
     def do_POST(self):
         if self.path.startswith('/api'):
             f = self.gen_content_POST()
-            if f:
+            if f != None:
                 self.send_response(200)
                 self.send_header("Connection", "close")
                 f = json.dumps(f)
@@ -81,26 +129,34 @@ class RequestHdlr(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith('/api'):
-            self.send_response(200)
-            self.send_header("Connection", "close")
             f = self.gen_content_GET()
-            f = f.encode('UTF-8', 'replace')
-            self.send_header("Content-Type", "application/json;charset=utf-8")
-            log.debug('sending {} bytes'.format(len(f)))
-            self.send_header("Content-Length", str(len(f)))
-            self.end_headers()
-            self.wfile.write(f)
-        else:
-            self.send_error(404)
-            self.end_headers()
+            if f != None:
+                self.send_response(200)
+                self.send_header("Connection", "close")
+                f = json.dumps(f)
+                f = f.encode('UTF-8', 'replace')
+                self.send_header("Content-Type", "application/json;charset=utf-8")
+                log.debug('sending {} bytes'.format(len(f)))
+                self.send_header("Content-Length", str(len(f)))
+                self.end_headers()
+                self.wfile.write(f)
+                return
+        self.send_error(404)
+        self.end_headers()
 
     def log_message(self, format, *args):
         log.debug("{addr} - - [{dt}] {args}\n".format(addr = self.address_string(), dt = self.log_date_time_string(), args = format%args))
 
 async def init_webapi(bot):
     log.debug('binding to port {0}'.format(bot.config.webapi_port))
+
     global botinst
     botinst = bot
+
+    if bot.config.webapi_persistent_tokens:
+        global authtoken
+        authtoken = await deserialize_tokens()
+
     serv = ThreadingHTTPServer((host, bot.config.webapi_port), RequestHdlr)
     if bot.config.ssl_certfile and bot.config.ssl_keyfile:
         try:
@@ -115,26 +171,56 @@ async def init_webapi(bot):
             log.info('using https for webapi')
     else:
         log.info('using http for webapi')
+    global webserver
+    webserver = serv
     server_thread = threading.Thread(target=serv.serve_forever)
     # Exit the server thread when the main thread terminates
     server_thread.daemon = True
     server_thread.start()
 
-# @TheerapakG: TODO: dm this
-@dev_only
-async def cmd_gentoken(bot):
-    token = str(uuid.uuid4())
-    authtoken.add(token)
-    return Response("Generated token `{0}`".format(token))
+async def cleanup_stopserverthread(bot):
+    log.debug('stopping http server...')
+    # @TheerapakG WARN: may cause significant block time
+    global webserver
+    webserver.shutdown()
 
-# @TheerapakG: TODO: dm this
+
 @dev_only
-async def cmd_revoketoken(bot, token):
+async def cmd_gentoken(bot, author):
+    """
+    Usage:
+        {command_prefix}gentoken
+
+    Generate a token. DO NOT GIVE GENERATED TOKENS TO UNKNOWN RANDOM PEOPLE!!
+    ANYONE WITH TOKEN CAN ISSUE REMOTE EXECUTION VIA post:eval and post:exec
+    METHODS. FAILING TO DO THIS CAN RESULT IN COMPROMISE OF YOUR MACHINE'S
+    SECURITY.
+    """
+    token = str(token_urlsafe(64))
+    # @TheerapakG: MAYDO: salt this (actually nevermind, if they got this they probably got the bot token too, and that's worse)
+    authtoken.append(token)
+    if bot.config.webapi_persistent_tokens:
+        await serialize_tokens()
+    await author.send(bot.str.get('webapi?cmd?gentoken?success@gentoken', "Generated token `{0}`.").format(token))
+    return Response(bot.str.get('webapi?cmd?gentoken?success@sent', "Sent a message containing the token generated."), delete_after=20)
+
+@dev_only
+async def cmd_revoketoken(bot, author, token):
+    """
+    Usage:
+        {command_prefix}revoketoken token
+
+    Revoke a token's access to the api.
+    """
     try:
         authtoken.remove(token)
-        return Response("Successfully revoked token `{0}`".format(token))
-    except KeyError:
-        return Response("Token `{0}` not found".format(token))
+        if bot.config.webapi_persistent_tokens:
+            await serialize_tokens()
+        await author.send(bot.str.get('webapi?cmd?revoketoken?success@revtoken', "Successfully revoked token `{0}`").format(token))
+    except ValueError:
+        await author.send(bot.str.get('webapi?cmd?revoketoken?fail@revtoken', "Token `{0}` not found").format(token))
+    finally:
+        return Response(bot.str.get('webapi?cmd?revoketoken?info@action', "Sent a message with information regarding the action."), delete_after=20)
 
 def threadsafe_exec_bot(code):
     fut = asyncio.run_coroutine_threadsafe(botinst.exec_bot(code), botinst.loop)
@@ -152,20 +238,20 @@ def threadsafe_eval_bot(code):
 def get_cog_list():
     # structure:
     # return = list(coginfo)
-    # commandinfo = tuple(cogname, cogloaded)
+    # commandinfo = dict(cogname, cogloaded)
     fut = asyncio.run_coroutine_threadsafe(gen_cog_list(), botinst.loop)
     result = fut.result()
     coglist = list()
     for cog in result:
         cogfut = asyncio.run_coroutine_threadsafe(cog.isload(), botinst.loop)
         cogresult = cogfut.result()
-        coglist.append((cog.name, cogresult))
+        coglist.append({'cogname':cog.name, 'cogloaded':cogresult})
     return coglist
 
 def get_cmd_list(cogname):
     # structure:
     # return = list(commandinfo)
-    # commandinfo = tuple(commandname, commandaliases)
+    # commandinfo = dict(commandname, commandaliases)
     # commandaliases = list(commandalias)
     fut = asyncio.run_coroutine_threadsafe(gen_cmd_list_from_cog(cogname), botinst.loop)
     result = fut.result()
@@ -173,44 +259,50 @@ def get_cmd_list(cogname):
     for command in result:
         commandfut = asyncio.run_coroutine_threadsafe(command.list_alias(), botinst.loop)
         commandresult = commandfut.result()
-        cmdlist.append((command.name, commandresult))
+        cmdlist.append({'commandname':command.name, 'commandaliases':commandresult})
     return cmdlist
 
 def get_guild_list():
     # structure:
     # return = list(guildinfo)
-    # guildinfo = tuple(guildid, guildname, guildownerid, guildvoice_channelsid, guildtext_channelsid)
+    # guildinfo = dict(guildid, guildname, guildownerid, guildvoice_channelsid, guildtext_channelsid)
     # guildvoice_channelsid = list(guildvoice_channelid)
     # guildtext_channelsid = list(guildtext_channelid)
-    guildlist = list()
-    # @TheerapakG: TODO: thread unsafe, need deep copy in the bot thread or lock bot execution up
-    for guild in botinst.guilds.copy():
-        guildlist.append((guild.id, guild.name, guild.owner.id, [voice_channel.id for voice_channel in guild.voice_channels], [text_channel.id for text_channel in guild.text_channels]))
-    return guildlist
+    async def bot_context_get_guild_list(self):
+        guildlist = list()
+        for guild in self.guilds.copy():
+            guildlist.append({'guildid':guild.id, 'guildname':guild.name, 'guildownerid':guild.owner.id, 'guildvoice_channelsid':[voice_channel.id for voice_channel in guild.voice_channels], 'guildtext_channelsid':[text_channel.id for text_channel in guild.text_channels]})
+        return guildlist
+    fut = asyncio.run_coroutine_threadsafe(bot_context_get_guild_list(botinst), botinst.loop)
+    return fut.result()
 
 def get_member_list(guildid):
     # structure:
     # return = list(memberinfo)
-    # memberinfo = tuple(memberid, membername, memberdisplay_name, memberstatus, memberactivity)
-    # memberactivity = tuple(None) | tuple('Game', gamename) | tuple('Streaming', streamingname, streamingurl)
-    guild = threadsafe_eval_bot('self.get_guild({0})'.format(guildid))
-    memberlist = list()
-    # @TheerapakG: TODO: thread unsafe, need deep copy in the bot thread or lock bot execution up
-    for member in guild.members.copy():
-        memberactivity = None
-        if isinstance(member.activity, discord.Game):
-            memberactivity = ('Game', member.activity.name)
-        elif isinstance(member.activity, discord.Streaming):
-            memberactivity = ('Streaming', member.activity.name, member.activity.url)
-        memberlist.append((member.id, member.name, member.display_name, str(member.status), memberactivity))
-    return memberlist
+    # memberinfo = dict(memberid, membername, memberdisplay_name, memberstatus, memberactivity)
+    # memberactivity = dict('state':'None') | dict('state':'Game', gamename) | dict('state':'Streaming', streamingname, streamingurl)
+    async def bot_context_get_member_list(self, guildid):
+        guild = self.get_guild(guildid)
+        memberlist = list()
+        for member in guild.members.copy():
+            memberactivity = {'state':'None'}
+            if isinstance(member.activity, discord.Game):
+                memberactivity = {'state':'Game', 'gamename':member.activity.name}
+            elif isinstance(member.activity, discord.Streaming):
+                memberactivity = {'state':'Streaming', 'streamingname':member.activity.name, 'streamingurl':member.activity.url}
+            memberlist.append({'memberid':member.id, 'membername':member.name, 'memberdisplay_name':member.display_name, 'memberstatus':str(member.status), 'memberactivity':memberactivity})
+        return memberlist
+    fut = asyncio.run_coroutine_threadsafe(bot_context_get_member_list(botinst, guildid), botinst.loop)
+    return fut.result()
 
 def get_player(guildid):
     # structure:
-    # return = tuple(voiceclientid, playerplaylist, playercurrententry, playerstate, playerkaraokemode) | None
+    # return = dict(voiceclientid, playerplaylist, playercurrententry, playerstate, playerkaraokemode) | dict()
     # playerplaylist = list(playerentry)
-    # playercurrententry = playerentry | None
-    # playerentry = tuple(entry.url, entry.title)
-    player = threadsafe_eval_bot('self.get_player_in(self.get_guild({0}))'.format(guildid))
-    # @TheerapakG: TODO: thread unsafe, need deep copy in the bot thread or lock bot execution up
-    return (player.voice_client.session_id, [(entry.url, entry.title) for entry in player.playlist.entries.copy()], (player._current_entry.url, player._current_entry.title) if player._current_entry else None, str(player.state), player.karaoke_mode) if player else None
+    # playercurrententry = playerentry | dict()
+    # playerentry = dict(entryurl, entrytitle)
+    async def bot_context_get_player(self, guildid):
+        player = self.get_player_in(self.get_guild(guildid))
+        return {'voiceclientid':player.voice_client.session_id, 'playerplaylist':[{'entryurl':entry.url, 'entrytitle':entry.title} for entry in player.playlist.entries.copy()], 'playercurrententry':{'entryurl':player._current_entry.url, 'entrytitle':player._current_entry.title} if player._current_entry else dict(), 'playerstate':str(player.state), 'playerkaraokemode':player.karaoke_mode} if player else dict()
+    fut = asyncio.run_coroutine_threadsafe(bot_context_get_player(botinst, guildid), botinst.loop)
+    return fut.result()
