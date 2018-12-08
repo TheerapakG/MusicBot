@@ -10,7 +10,7 @@ from importlib import import_module, reload
 
 from collections import defaultdict
 
-from .cog import Cog, CallableCommand, UncallableCommand, command, call, getcommand, getcog, commands, cogs
+from .cog import Cog, CallableCommand, UncallableCommand, command, call, getcommand, getcog, commands, cogs, cog
 from .alias import Alias, AliasDefaults
 from . import exceptions
 
@@ -28,6 +28,10 @@ cmdrun = 0
 alias = None
 
 bot = None
+
+# @TheerapakG: TODO: FUTURE#1776?COG: implement cog class that will make it possible to have multiple cogs in one file
+# for efficiency on loading (no need to iterate on which var is considered cog), I will probably implement it as some sort of metaclass (again)
+# As I probably mentioned already in the PR that I won't do anything more, this will probably not be implement in #1766. #1766's main purpose is only to organize commands into place
 
 def init_cog_system(botvar, alias_file=None):
     global alias
@@ -96,6 +100,8 @@ async def _init_load_cog(loaded, modname):
         for att, handler in importfuncs['init']:
             if iscoroutinefunction(handler):
                 await handler(bot)
+
+        await cog(cogname)
 
         for att, handler in importfuncs['cmd']:
             # second pass, do actual work
