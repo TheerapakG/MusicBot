@@ -48,6 +48,9 @@ server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 host = ''
 botinst = None
 
+def notify():
+    return __doc__
+
 authtoken = list()
 
 async def serialize_tokens():
