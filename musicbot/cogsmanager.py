@@ -7,10 +7,11 @@ from textwrap import dedent
 from inspect import iscoroutinefunction
 
 from importlib import import_module, reload
+from functools import partial
 
 from collections import defaultdict
 
-from .cog import Cog, CallableCommand, UncallableCommand, command, call, getcommand, getcog, commands, cogs, cog
+from .cog import Cogobj, CallableCommand, UncallableCommand, command, call, getcommand, getcog, commands, cogs, cog
 from .alias import Alias, AliasDefaults
 from . import exceptions
 
@@ -29,17 +30,11 @@ alias = None
 
 bot = None
 
+_init = False
+
 # @TheerapakG: TODO: FUTURE#1776?COG: implement cog class that will make it possible to have multiple cogs in one file
 # for efficiency on loading (no need to iterate on which var is considered cog), I will probably implement it as some sort of metaclass (again)
 # As I probably mentioned already in the PR that I won't do anything more, this will probably not be implement in #1766. #1766's main purpose is only to organize commands into place
-
-def init_cog_system(botvar, alias_file=None):
-    global alias
-    if alias_file is None:
-        alias_file = AliasDefaults.alias_file
-    alias = Alias(alias_file)
-    global bot
-    bot = botvar
 
 # @TheerapakG: dodgy asyncio locking ahead, __in my head__ it should be correct but I can't guarantee. Can someone check?
 
@@ -186,7 +181,89 @@ async def _init_load_multicog(loaded, modname):
                     imported['{}.{}'.format(modname, submodname)] = submodule
                 await _init_load_cog(submodule, '{}.{}'.format(modname, submodname))
 
+_futures = list()
+
+def init_cog_system(botvar, alias_file=None):
+    async def check_init():
+        async with aiolocks['lock_init']:
+            global _init
+            if _init:
+                raise exceptions.CogError('Cogsystem already initialized')
+
+    def real_init(botvar, alias_file, future):
+        global alias
+        if alias_file is None:
+            alias_file = AliasDefaults.alias_file
+        alias = Alias(alias_file)
+        global bot
+        bot = botvar
+
+        async def set_init():
+            global _futures
+            async with aiolocks['lock_init_future']:
+                async with aiolocks['lock_init']:
+                    global _init
+                    _init = True
+                log.debug('Cogsystem initialized! will resume {} awaiter(s)'.format(len(_futures)))
+                for future in _futures:
+                    future.set_result(None)
+                _futures = list()
+
+        botvar.loop.create_task(set_init())
+
+    botvar.loop.create_task(check_init()).add_done_callback(partial(real_init, botvar, alias_file))
+
+async def wait_cog_system():
+    async with aiolocks['lock_init_future']:
+        async with aiolocks['lock_init']:
+            global _init
+            if _init:
+                return
+        future = asyncio.Future()
+        _futures.append(future)
+    await future
+
+async def uninit_cog_system():
+    async with aiolocks['lock_init']:
+        global _init
+        if not _init:
+            raise exceptions.CogError('Cogsystem not initialized')
+
+    await aiolocks['lock_execute'].acquire()
+    await aiolocks['lock_clear'].acquire()
+    global looped
+    for modname in looped:
+        # stop loop
+        log.debug('stopping {} loop(s)'.format(len(looped[modname])))
+        for callab in looped[modname]:
+            await callab.stop()
+
+    looped = dict()
+
+    global cleanup
+    for modname in cleanup:
+        log.debug('running {} cleanup(s)'.format(len(cleanup[modname])))
+        for hdlr in cleanup[modname]:
+            await hdlr(bot)
+
+    cleanup = dict()
+
+    global imported
+    global cogmodule
+    imported = dict()
+    cogmodule = dict()
+
+    async with aiolocks['lock_init']:
+        _init = False
+
+    aiolocks['lock_clear'].release()
+    aiolocks['lock_execute'].release()
+
 async def load(module):
+    async with aiolocks['lock_init']:
+        global _init
+        if not _init:
+            raise exceptions.CogError('Cogsystem not initialized')
     global alias
     await aiolocks['lock_execute'].acquire()
     await aiolocks['lock_clear'].acquire()
@@ -217,6 +294,10 @@ async def load(module):
         aiolocks['lock_execute'].release()
 
 async def checkblockloading():
+    async with aiolocks['lock_init']:
+        global _init
+        if not _init:
+            raise exceptions.CogError('Cogsystem not initialized')
     await aiolocks['lock_execute'].acquire()
     aiolocks['lock_execute'].release()
 
@@ -255,15 +336,28 @@ async def getcmd(cmd):
     await declock()
     return res
 
-async def callcmd(cmd, *args, **kwargs):
+async def callcmd(cmd, **kwargs):
     await checkblockloading()
     await inclock()
     try:
-        res = await call(cmd, *args, **kwargs)
+        cmd = await getcommand(cmd)
     except:
         await declock()
         raise
-    await declock()
+    
+    if getattr(cmd.func, 'bypass_opscount', False):
+        await declock()
+
+    try:
+        res = await cmd(**kwargs)
+    except:
+        if not getattr(cmd.func, 'bypass_opscount', False):
+            await declock()
+        raise
+
+    if not getattr(cmd.func, 'bypass_opscount', False):
+        await declock()
+
     return res
 
 async def add_alias(cmd, als, forced = False):
@@ -320,3 +414,11 @@ async def gen_cmd_list_from_cog(cogname):
     finally:
         await declock()
         return ret
+
+async def get_highlevel_cog_operations():
+    await checkblockloading()
+    await inclock()
+    async with aiolocks['lock_cmdrun']:
+        num = cmdrun
+    await declock()
+    return num

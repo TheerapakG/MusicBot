@@ -35,7 +35,7 @@ class ModifiabledocABCMeta(ABCMeta):
 
         return super(ModifiabledocABCMeta, cls).__new__(cls, clsname, bases, dct)
 
-class Cog(metaclass = ModifiabledocABCMeta):
+class Cogobj(metaclass = ModifiabledocABCMeta):
     def __init__(self, name):
         # @TheerapakG: For anyone who will work on this, COG NAME SHALL NOT BE CHANGEABLE VIA A COMMAND. IT'S VERY UNREASONABLE WHY YOU'D WANT TO DO IT AND WILL BREAK THIS
         self.name = name
@@ -226,13 +226,13 @@ class CallableCommand(Command):
         return argspec.parameters.copy()
 
 async def cog(name):
-    cg = Cog(name)
+    cg = Cogobj(name)
     cogs.add(cg)
     return cg
 
 async def command(cog, name, func):
     cmd = CallableCommand(cog, name, func)
-    cogs.add(Cog(cog))
+    cogs.add(Cogobj(cog))
     for itcog in cogs:
         if itcog.name == cog:
             await itcog.add_command(cmd)
@@ -248,7 +248,8 @@ async def getcommand(cmd):
     raise exceptions.CogError("command (or alias) `{0}` not found".format(cmd))
 
 async def call(cmd, **kwargs):
-    return await getcommand(cmd)(**kwargs)
+    command = await getcommand(cmd)
+    return await command(**kwargs)
 
 def getcog(name):
     for itcog in cogs:

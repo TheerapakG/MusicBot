@@ -47,7 +47,7 @@ from .lib.emitter_toggler import EmitterToggler
 from .constants import VERSION as BOTVERSION
 from .constants import DISCORD_MSG_CHAR_LIMIT, AUDIO_CACHE_PATH
 
-from .cogsmanager import load, callcmd, getcmd, init_cog_system, gen_cmd_list
+from .cogsmanager import load, callcmd, getcmd, init_cog_system, uninit_cog_system, gen_cmd_list, wait_cog_system
 
 
 load_opus_lib()
@@ -70,8 +70,6 @@ class MusicBot(discord.Client):
         if perms_file is None:
             perms_file = PermissionsDefaults.perms_file
 
-        init_cog_system(self, alias_file)
-
         self.players = {}
         self.exit_signal = None
         self.init_ok = False
@@ -84,6 +82,9 @@ class MusicBot(discord.Client):
         
         self.permissions = Permissions(perms_file, grant_all=[self.config.owner_id])
         self.str = Json(self.config.i18n_file)
+
+        if self.config.usealias:
+            self.aliases = Aliases(aliases_file)
 
         self.blacklist = set(load_file(self.config.blacklist_file))
         self.autoplaylist = load_file(self.config.auto_playlist_file)
@@ -140,6 +141,7 @@ class MusicBot(discord.Client):
                 time.sleep(5)  # make sure they see the problem
 
         async def init_modules_importer():
+            await wait_cog_system()
             for module in self.config.cogs:
                 try:
                     await load(module)
@@ -148,6 +150,7 @@ class MusicBot(discord.Client):
                     if e.__cause__ is not None:
                         log.error("Traceback:\n{0}{1}: {2}".format("".join(traceback.format_list(traceback.extract_tb(e.__cause__.__traceback__))), type(e.__cause__).__name__, e.__context__)) # pylint: disable=E1101
 
+        init_cog_system(self, alias_file)
         self.loop.create_task(init_modules_importer())
 
     def _get_owner(self, *, server=None, voice=False):
@@ -1030,6 +1033,7 @@ class MusicBot(discord.Client):
         asyncio.run_coroutine_threadsafe(self.restart(), self.loop)
 
     def _cleanup(self):
+        self.loop.run_until_complete(uninit_cog_system())
         try:
             self.loop.run_until_complete(self.logout())
             self.loop.run_until_complete(self.aiosession.close())
@@ -1313,7 +1317,11 @@ class MusicBot(discord.Client):
         command, *args = message_content.split(' ')  # Uh, doesn't this break prefixes with spaces in them (it doesn't, config parser already breaks them)
         command = command[len(self.config.command_prefix):].lower().strip()
 
-        args = ' '.join(args).lstrip(' ').split(' ')
+        # [] produce [''] which is not what we want (it break things)
+        if args:
+            args = ' '.join(args).lstrip(' ').split(' ')
+        else:
+            args = []
 
         handler = None
         try:
@@ -1459,7 +1467,7 @@ class MusicBot(discord.Client):
                 )
                 return
 
-            response = await handler(**handler_kwargs)
+            response = await callcmd(command, **handler_kwargs)
             if response and isinstance(response, Response):
                 if not isinstance(response.content, discord.Embed) and self.config.embeds:
                     content = self._gen_embed()
@@ -1587,7 +1595,7 @@ class MusicBot(discord.Client):
                     self.server_specific_data[player.voice_client.guild]['auto_paused'] = False
                     player.resume()
             elif player.voice_client.channel == before.channel and player.voice_client.channel != after.channel:
-                if len(player.voice_client.channel.members) == 0:
+                if len(player.voice_client.channel.members) == 1:
                     if not auto_paused and player.is_playing:
                         log.info(autopause_msg.format(
                             state = "Pausing",
