@@ -38,6 +38,10 @@ from ..constructs import Response
 from ..cogsmanager import gen_cog_list, gen_cmd_list_from_cog
 from ..wrappers import owner_only
 
+from .. import guildmanager
+from .. import voicechannelmanager
+from .. import messagemanager
+
 log = logging.getLogger(__name__)
 
 cog_name = 'webapi'
@@ -308,7 +312,7 @@ def get_player(guildid):
     # playercurrententry = playerentry | dict()
     # playerentry = dict(entryurl, entrytitle)
     async def bot_context_get_player(self, guildid):
-        player = self.get_player_in(self.get_guild(guildid))
+        player = guildmanager.get_guild(self, self.get_guild(guildid)).get_player_in()
         return {'voiceclientid':player.voice_client.session_id, 'playerplaylist':[{'entryurl':entry.url, 'entrytitle':entry.title} for entry in player.playlist.entries.copy()], 'playercurrententry':{'entryurl':player._current_entry.url, 'entrytitle':player._current_entry.title} if player._current_entry else dict(), 'playerstate':str(player.state), 'playerkaraokemode':player.karaoke_mode} if player else dict()
     fut = asyncio.run_coroutine_threadsafe(bot_context_get_player(botinst, guildid), botinst.loop)
     return fut.result()
