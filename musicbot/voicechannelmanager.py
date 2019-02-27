@@ -2,12 +2,15 @@ from discord import VoiceChannel, Member
 from .player import MusicPlayer
 from .playlist import Playlist
 from .constructs import SkipState
+from .lib.emitter_toggler import EmitterToggler
 from .messagemanager import safe_delete_message, safe_edit_message, safe_send_message
 from . import downloader
 from . import exceptions
 from .utils import _func_
 from .guildmanager import ManagedGuild
 from collections import defaultdict
+from urllib.error import URLError
+import os
 import logging
 import random
 import asyncio
@@ -41,6 +44,12 @@ class ManagedVC:
                        .on('entry-added', self.on_player_entry_added) \
                        .on('error', self.on_player_error)
 
+        player.auto_state = EmitterToggler(player)
+        player.auto_state.add({
+            'autoentry': True,
+            'finishedentry': False,
+            })
+
         player.skip_state = SkipState()
 
         self._player = player
@@ -65,6 +74,7 @@ class ManagedVC:
 
                 if player:
                     log.debug("Created player via deserialization for guild %s with %s entries", self._guild._guildid, len(player.playlist))
+                    player.auto_mode = await self._guild.deserialize_json(dir = 'data/%s/mode.json')   
                     # Since deserializing only happens when the bot starts, I should never need to reconnect
                     return self._init_player(player)
 
@@ -148,70 +158,186 @@ class ManagedVC:
                 player.pause()
                 self._guild._data['auto_paused'] = True
 
-        if not player.playlist.entries and not player.current_entry and self._guild._client.config.auto_playlist:
+        if not player.auto_mode:
+            player.auto_mode = dict()
+            player.auto_mode['mode'] = self._guild._client.config.auto_mode
+            if(player.auto_mode['mode'] == 'toggle'):
+                player.auto_mode['auto_toggle'] = self._guild._client.playlisttype[0]
+            await self._guild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+        
+        if not player.playlist.entries and not player.current_entry and (self._guild._client.config.auto_playlist or self._guild._client.config.auto_stream):
             if not player.autoplaylist:
-                if not self._guild._client.autoplaylist:
-                    # TODO: When I add playlist expansion, make sure that's not happening during this check
-                    log.warning("No playable songs in the autoplaylist, disabling.")
-                    self._guild._client.config.auto_playlist = False
-                else:
-                    log.debug("No content in current autoplaylist. Filling with new music...")
-                    player.autoplaylist = list(self._guild._client.autoplaylist)
+                player.autoplaylist = list()
+                if self._guild._client.config.auto_playlist:
+                    if not self._guild._client.autoplaylist:
+                        # TODO: When I add playlist expansion, make sure that's not happening during this check
+                        log.warning("No playable songs in the autoplaylist, disabling.")
+                        if(player.auto_mode['mode'] == 'toggle'):
+                            if player.auto_mode['auto_toggle'] == 'playlist' and len(self._guild._client.playlisttype) > 1:
+                                try:
+                                    i = self._guild._client.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                    if i == len(self._guild._client.playlisttype):
+                                        i = 0
+                                except ValueError:
+                                    i = 0
+                            player.auto_mode['auto_toggle'] = self._guild._client.playlisttype[i]
+                        self._guild._client.playlisttype.remove('playlist')
+                        await self._guild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+                        self._guild._client.config.auto_playlist = False
+                    else:
+                        if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'playlist'):
+                            log.debug("No content in current autoplaylist. Filling with new music...")
+                            player.autoplaylist.extend([(url, "default") for url in list(self._guild._client.autoplaylist)])
+                if self._guild._client.config.auto_stream:
+                    if not self._guild._client.autostream:
+                        log.warning("No playable songs in the autostream, disabling.")
+                        if(player.auto_mode['mode'] == 'toggle'):
+                            if player.auto_mode['auto_toggle'] == 'stream' and len(self._guild._client.playlisttype) > 1:
+                                try:
+                                    i = self._guild._client.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                    if i == len(self._guild._client.playlisttype):
+                                        i = 0
+                                except ValueError:
+                                    i = 0
+                            player.auto_mode['auto_toggle'] = self._guild._client.playlisttype[i]
+                        self._guild._client.playlisttype.remove('stream')
+                        await self._guild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+                        self._guild._client.config.auto_stream = False
+                    else:
+                        if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'stream'):
+                            log.debug("No content in current autostream. Filling with new music...")
+                            player.autoplaylist.extend([(url, "stream") for url in list(self._guild._client.autostream)])
 
             while player.autoplaylist:
-                if self._guild._client.config.auto_playlist_random:
+                if self._guild._client.config.auto_playlist_stream_random:
                     random.shuffle(player.autoplaylist)
                     song_url = random.choice(player.autoplaylist)
                 else:
                     song_url = player.autoplaylist[0]
                 player.autoplaylist.remove(song_url)
 
-                info = {}
+                if song_url[1] == "default":
 
-                try:
-                    info = await self._guild._client.downloader.extract_info(player.playlist.loop, song_url, download=False, process=False)
-                except downloader.youtube_dl.utils.DownloadError as e:
-                    if 'YouTube said:' in e.args[0]:
-                        # url is bork, remove from list and put in removed list
-                        log.error("Error processing youtube url:\n{}".format(e.args[0]))
+                    info = {}
 
-                    else:
-                        # Probably an error from a different extractor, but I've only seen youtube's
-                        log.error("Error processing \"{url}\": {ex}".format(url=song_url, ex=e))
+                    try:
+                        info = await self._guild._client.downloader.extract_info(player.playlist.loop, song_url[0], download=False, process=False)
+                    except downloader.youtube_dl.utils.DownloadError as e:
+                        if 'YouTube said:' in e.args[0]:
+                            # url is bork, remove from list and put in removed list
+                            log.error("Error processing youtube url:\n{}".format(e.args[0]))
 
-                    await self._guild._client.remove_from_autoplaylist(song_url, ex=e, delete_from_ap=self._guild._client.config.remove_ap)
-                    continue
+                        else:
+                            # Probably an error from a different extractor, but I've only seen youtube's
+                            log.error("Error processing \"{url}\": {ex}".format(url=song_url[0], ex=e))
 
-                except Exception as e:
-                    log.error("Error processing \"{url}\": {ex}".format(url=song_url, ex=e))
-                    log.exception()
+                        await self._guild._client.remove_from_autoplaylist(song_url[0], ex=e, delete_from_ap=self._guild._client.config.remove_ap)
+                        continue
 
-                    self._guild._client.autoplaylist.remove(song_url)
-                    continue
+                    except Exception as e:
+                        log.error("Error processing \"{url}\": {ex}".format(url=song_url[0], ex=e))
+                        log.exception()
 
-                if info.get('entries', None):  # or .get('_type', '') == 'playlist'
-                    log.debug("Playlist found but is unsupported at this time, skipping.")
-                    # TODO: Playlist expansion
+                        self._guild._client.autoplaylist.remove(song_url[0])
+                        continue
 
-                # Do I check the initial conditions again?
-                # not (not player.playlist.entries and not player.current_entry and self.config.auto_playlist)
+                    if info.get('entries', None):  # or .get('_type', '') == 'playlist'
+                        log.debug("Playlist found but is unsupported at this time, skipping.")
+                        # TODO: Playlist expansion
 
-                if self._guild._client.config.auto_pause:
-                    player.once('play', lambda player, **_: _autopause(player))
+                    # Do I check the initial conditions again?
+                    # not (not player.playlist.entries and not player.current_entry and self.config.auto_playlist)
 
-                try:
-                    await player.playlist.add_entry(song_url, channel=None, author=None)
-                except exceptions.ExtractionError as e:
-                    log.error("Error adding song from autoplaylist: {}".format(e))
-                    log.debug('', exc_info=True)
-                    continue
+                    if self._guild._client.config.auto_pause:
+                        player.once('play', lambda player, **_: _autopause(player))
 
-                break
+                    try:
+                        player.auto_state.once('change-entry', 'finishedentry')
+                        player.auto_state.once('play', 'autoentry')
+                        await player.playlist.add_entry(song_url[0], channel=None, author=None)
+                    except exceptions.ExtractionError as e:
+                        log.error("Error adding song from autoplaylist: {}".format(e))
+                        log.debug('', exc_info=True)
+                        continue
 
-            if not self._guild._client.autoplaylist:
-                # TODO: When I add playlist expansion, make sure that's not happening during this check
-                log.warning("No playable songs in the autoplaylist, disabling.")
-                self._guild._client.config.auto_playlist = False
+                    break
+                    
+                elif song_url[1] == "stream":
+                        
+                    info = {'extractor': None}
+
+                    try:
+                        info = await self._guild._client.downloader.extract_info(player.playlist.loop, song_url[0], download=False, process=False)
+                    except downloader.youtube_dl.utils.DownloadError as e:
+                        
+                        if e.exc_info[0] == URLError:
+                            if os.path.exists(os.path.abspath(song_url[0])):
+                                await self._guild._client.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("This is not a stream, this is a file path."), delete_from_as=self._guild._client.config.remove_as)
+                                continue
+                         
+                            else:  # it might be a file path that just doesn't exist
+                                await self._guild._client.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("Invalid input: {0.exc_info[0]}: {0.exc_info[1].reason}".format(e)), delete_from_as=self._guild._client.config.remove_as)
+                                continue
+
+                        else:
+                            # traceback.print_exc()
+                            await self._guild._client.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("Unknown error: {}".format(e)), delete_from_as=self._guild._client.config.remove_as)
+                            continue
+                        
+                    except Exception as e:
+                        log.error('Could not extract information from {} ({}), falling back to direct'.format(song_url[0], e), exc_info=True)
+
+                    if info.get('is_live') is None and info.get('extractor', None) is not 'generic':  # wew hacky
+                        await self._guild._client.remove_from_autostream(song_url[0], ex=exceptions.ExtractionError("This is not a stream."), delete_from_as=self._guild._client.config.remove_as)
+                        continue
+
+                    if self._guild._client.config.auto_pause:
+                        player.once('play', lambda player, **_: _autopause(player))
+
+                    try:
+                        player.auto_state.once('change-entry', 'finishedentry')
+                        player.auto_state.once('play', 'autoentry')
+                        await player.playlist.add_stream_entry(song_url[0], info=None)
+                    except exceptions.ExtractionError as e:
+                        log.error("Error adding song from autostream: {}".format(e))
+                        log.debug('', exc_info=True)
+                        continue
+
+                    break
+                    
+                else:
+                    log.error("autoplaylist type undefined: {}".format(song_url[1]))
+                        
+                if self._guild._client.config.auto_playlist:
+                    if not self._guild._client.autoplaylist:
+                        # TODO: When I add playlist expansion, make sure that's not happening during this check
+                        log.warning("No playable songs in the autoplaylist, disabling.")
+                        self._guild._client.config.auto_playlist = False
+                        if player.auto_mode['auto_toggle'] == 'playlist' and len(self._guild._client.playlisttype) > 1:
+                            try:
+                                i = self._guild._client.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                if i == len(self._guild._client.playlisttype):
+                                    i = 0
+                            except ValueError:
+                                i = 0
+                            player.auto_mode['auto_toggle'] = self._guild._client.playlisttype[i]
+                        await self._guild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+                        self._guild._client.playlisttype.remove('playlist')
+
+                if self._guild._client.config.auto_stream:
+                    if not self._guild._client.autostream:
+                        log.warning("No playable songs in the autostream, disabling.")
+                        self._guild._client.config.auto_stream = False
+                        if player.auto_mode['auto_toggle'] == 'stream' and len(self._guild._client.playlisttype) > 1:
+                            try:
+                                i = self._guild._client.playlisttype.index(player.auto_mode['auto_toggle']) + 1
+                                if i == len(self._guild._client.playlisttype):
+                                    i = 0
+                            except ValueError:
+                                i = 0
+                            player.auto_mode['auto_toggle'] = self._guild._client.playlisttype[i]
+                        await self._guild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+                        self._guild._client.playlisttype.remove('stream')
 
         else: # Don't serialize for autoplaylist events
             await self._guild.serialize_queue()

@@ -9,6 +9,7 @@ import os
 import asyncio
 import logging
 import pathlib
+import json
 
 log = logging.getLogger(__name__)
 
@@ -151,6 +152,41 @@ class ManagedGuild:
                 data = f.read()
 
         return MusicPlayer.from_json(data, self._client, voice_client, playlist)
+
+    async def serialize_json(self, data, *, dir=None):
+        """
+        Serialize the current queue for a server's player to json.
+        """
+
+        dir = dir.replace('%s', str(self._guildid))
+
+        async with self._aiolocks['json_serialization' + ':' + str(self._guildid)]:
+            log.debug("Serializing json for %s at %s", self._guildid, dir)
+
+            with open(dir, 'w', encoding='utf8') as f:
+                f.write(json.dumps(data))
+
+    async def deserialize_json(self, *, dir=None):
+        """
+        Deserialize arbitrary json.
+        """
+
+        dir = dir.replace('%s', str(self._guildid))
+
+        async with self._aiolocks['json_serialization' + ':' + str(self._guildid)]:
+            if not os.path.isfile(dir):
+                return None
+
+            log.debug("Deserializing json for %s at %s", self._guildid, dir)
+
+            try:
+                with open(dir, 'r', encoding='utf8') as f:
+                    data = f.read()
+
+            except FileNotFoundError:
+                return None
+
+        return json.loads(data)
 
     async def write_current_song(self, entry, *, dir=None):
         """
