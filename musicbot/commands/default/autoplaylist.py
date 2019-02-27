@@ -14,21 +14,21 @@ log = logging.getLogger(__name__)
 
 cog_name = 'autoplaylist'
 
-# @TheerapakG: TODO: fix serialization as consequence from merge
-
-async def cmd_resetplaylist(bot, player, channel):
+async def cmd_resetplaylist(bot, guild, player, channel):
     """
     Usage:
         {command_prefix}resetplaylist
 
     Resets all songs in the server's autoplaylist and autostream with no randomization
     """
+    mguild = guildmanager.get_guild(bot, guild)
+
     if not player.autoplaylist_mode:
         player.auto_mode = dict()
         player.auto_mode['mode'] = bot.config.auto_playlist
         if(player.auto_mode['mode'] == 'toggle'):
             player.auto_mode['auto_toggle'] = bot.playlisttype[0]
-        await bot.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+        await mguild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
 
     player.autoplaylist = list()
     if bot.config.auto_playlist:
@@ -44,7 +44,7 @@ async def cmd_resetplaylist(bot, player, channel):
                 except ValueError:
                     i = 0
                 player.auto_mode['auto_toggle'] = bot.playlisttype[i]
-            await bot.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+            await mguild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
             bot.playlisttype.remove('playlist')
         else:
             if player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'playlist'):
@@ -62,7 +62,7 @@ async def cmd_resetplaylist(bot, player, channel):
                 except ValueError:
                     i = 0
                 player.auto_mode['auto_toggle'] = bot.playlisttype[i]
-            await bot.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+            await mguild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
             bot.playlisttype.remove('stream')
         else:
             if  player.auto_mode['mode'] == 'merge' or (player.auto_mode['mode'] == 'toggle' and player.auto_mode['auto_toggle'] == 'stream'):
@@ -70,19 +70,21 @@ async def cmd_resetplaylist(bot, player, channel):
                 player.autoplaylist.extend([(url, "stream") for url in list(bot.autostream)])
     return Response(bot.str.get('cmd-resetplaylist-response', '\N{OK HAND SIGN}'), delete_after=15)
 
-async def cmd_toggleplaylist(bot, author, permissions, player, channel):
+async def cmd_toggleplaylist(bot, author, permissions, guild, player, channel):
     """
     Usage:
         {command_prefix}toggleplaylist
 
     Toggle between autoplaylist and autostream
     """
+    mguild = guildmanager.get_guild(bot, guild)
+
     if not player.auto_mode:
         player.auto_mode = dict()
         player.auto_mode['mode'] = bot.config.auto_mode
         if(player.auto_mode['mode'] == 'toggle'):
             player.auto_mode['auto_toggle'] = bot.playlisttype[0]
-        await bot.serialize_json(player.auto_mode, player, dir = 'data/%s/mode.json')
+        await mguild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
 
     if player.auto_mode['mode'] == 'toggle':
         if not permissions.toggle_playlists:
@@ -103,7 +105,7 @@ async def cmd_toggleplaylist(bot, author, permissions, player, channel):
             return Response(bot.str.get('cmd-toggleplaylist-nolist', 'There is not any autoplaylist to toggle to'), delete_after=15)
         else:
             player.auto_mode['auto_toggle'] = bot.playlisttype[i]
-            await bot.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
+            await mguild.serialize_json(player.auto_mode, dir = 'data/%s/mode.json')
             # reset playlist
             player.autoplaylist = list()
             # if autoing then switch
