@@ -621,8 +621,6 @@ class MusicBot(discord.Client):
             name = self.config.status_message.strip()[:128]
         
         activity_type = await lookup_activity(self.config.activitystatus)
-        if activity_type not in ['0','1', '2', '3', 'playing', 'streaming', 'listening to', 'watching']:
-            activity_type = discord.ActivityType.playing
         if not self.config.streamer.startswith("https://www.twitch.tv/"):
             url = "https://www.twitch.tv/"
         else:
